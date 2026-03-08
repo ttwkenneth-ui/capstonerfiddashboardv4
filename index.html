@@ -7,7 +7,14 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; }
     .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom: 12px; }
-    .card { border:1px solid #ddd; border-radius:10px; padding:12px; min-width:240px; }
+    .card {
+      border:1px solid #ddd;
+      border-radius:10px;
+      padding:12px;
+      min-width:240px;
+      background:#fff;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
     table { width:100%; border-collapse: collapse; }
     th, td { border-bottom:1px solid #eee; padding:8px; text-align:left; }
     th { background:#fafafa; position: sticky; top:0; }
@@ -15,9 +22,35 @@
     input { padding:8px; width: 320px; }
     .big { font-size: 18px; font-weight: bold; }
     .section { margin-top: 20px; }
-    .ok { font-weight: bold; }
-    .warn { font-weight: bold; }
     .grid-2 { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
+
+    .weight-good {
+      background: #ecfdf3;
+      border-color: #86efac;
+    }
+
+    .weight-replace {
+      background: #fef2f2;
+      border-color: #fca5a5;
+    }
+
+    .status-good {
+      color: #166534;
+      font-weight: bold;
+    }
+
+    .status-bad {
+      color: #b91c1c;
+      font-weight: bold;
+    }
+
+    .row-fail {
+      background: #fff1f2;
+    }
+
+    .row-expired {
+      opacity: 0.7;
+    }
   </style>
 </head>
 <body>
@@ -47,7 +80,7 @@
   </div>
 
   <div class="grid-2">
-    <div class="card">
+    <div class="card" id="weightCard">
       <div><b>Weight Sensor Live Status</b></div>
       <div id="weightStatusText" class="big">—</div>
       <div id="weightValueText" class="muted">Weight: -</div>
