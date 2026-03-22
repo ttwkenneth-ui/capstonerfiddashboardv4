@@ -1,156 +1,323 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Inspection Dashboard</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom: 12px; }
-    .card {
-      border:1px solid #ddd;
-      border-radius:10px;
-      padding:12px;
-      min-width:240px;
-      background:#fff;
-      transition: background 0.2s ease, border-color 0.2s ease;
+import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
+import {
+  getDatabase,
+  ref,
+  onValue,
+  query,
+  limitToLast
+} from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAT6VhvQggviNUxDhL8KQKcyCi_Q1S6gjU",
+  authDomain: "capstone3-bc2c3.firebaseapp.com",
+  databaseURL: "https://capstone3-bc2c3-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "capstone3-bc2c3",
+  storageBucket: "capstone3-bc2c3.firebasestorage.app",
+  messagingSenderId: "948536456584",
+  appId: "1:948536456584:web:2e47332cbd2729b2c1363d"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getDatabase(app);
+
+// ===== DOM =====
+const statusEl = document.getElementById("status");
+const lastEventTimeEl = document.getElementById("lastEventTime");
+const lastWeightTimeEl = document.getElementById("lastWeightTime");
+
+const logBody = document.getElementById("logBody");
+const activeTagsBody = document.getElementById("activeTagsBody");
+const weightLogBody = document.getElementById("weightLogBody");
+const searchEl = document.getElementById("search");
+
+const weightCard = document.getElementById("weightCard");
+const weightStatusText = document.getElementById("weightStatusText");
+const weightValueText = document.getElementById("weightValueText");
+const weightInspectorText = document.getElementById("weightInspectorText");
+const weightModeText = document.getElementById("weightModeText");
+const weightCheckedAtText = document.getElementById("weightCheckedAtText");
+const weightCountdownText = document.getElementById("weightCountdownText");
+
+// ===== CONSTANTS =====
+const ACTIVE_WINDOW_MS = 60 * 1000;
+
+// ===== STATE =====
+let eventsArr = [];        // inspectionEvents
+let latestByUid = {};      // latest event by uidKey
+let weightEventsArr = [];  // weightEvents
+let latestWeight = null;   // latestWeightCheck/fireExtinguisher
+
+// ===== HELPERS =====
+function fmtTime(ms) {
+  if (!ms) return "-";
+  return new Date(ms).toLocaleString();
+}
+
+function getRemainingMs(inspectedAt) {
+  if (!inspectedAt) return 0;
+  return Math.max(0, ACTIVE_WINDOW_MS - (Date.now() - inspectedAt));
+}
+
+function formatCountdown(ms) {
+  const sec = Math.ceil(ms / 1000);
+  const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+  const ss = String(sec % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+function getSearchText() {
+  return (searchEl?.value || "").trim().toLowerCase();
+}
+
+function setStatusText(text) {
+  if (statusEl) statusEl.textContent = text;
+}
+
+function rebuildLatestByUid() {
+  latestByUid = {};
+
+  for (const e of eventsArr) {
+    if (!e.uidKey) continue;
+
+    if (
+      !latestByUid[e.uidKey] ||
+      (e.inspectedAt || 0) > (latestByUid[e.uidKey].inspectedAt || 0)
+    ) {
+      latestByUid[e.uidKey] = e;
     }
-    table { width:100%; border-collapse: collapse; }
-    th, td { border-bottom:1px solid #eee; padding:8px; text-align:left; }
-    th { background:#fafafa; position: sticky; top:0; }
-    .muted { color:#666; font-size: 12px; }
-    input { padding:8px; width: 320px; }
-    .big { font-size: 18px; font-weight: bold; }
-    .section { margin-top: 20px; }
-    .grid-2 { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
+  }
+}
 
-    .weight-good {
-      background: #ecfdf3;
-      border-color: #86efac;
+// ===== RENDER: ACTIVE RFID TAGS =====
+function renderActiveTags() {
+  if (!activeTagsBody) return;
+
+  const q = getSearchText();
+  activeTagsBody.innerHTML = "";
+
+  const rows = Object.values(latestByUid).sort(
+    (a, b) => (b.inspectedAt || 0) - (a.inspectedAt || 0)
+  );
+
+  for (const r of rows) {
+    const hay = `${r.uidKey || ""} ${r.name || ""} ${r.inspector || ""} ${r.status || ""}`.toLowerCase();
+    if (q && !hay.includes(q)) continue;
+
+    const remainingMs = getRemainingMs(r.inspectedAt);
+    const isActive = remainingMs > 0;
+    const state = isActive ? `ACTIVE (${formatCountdown(remainingMs)})` : "EXPIRED";
+
+    const tr = document.createElement("tr");
+
+    if (!isActive) tr.classList.add("row-expired");
+    if ((r.status || "").toUpperCase() === "FAIL") tr.classList.add("row-fail");
+
+    tr.innerHTML = `
+      <td>${r.uidKey || ""}</td>
+      <td>${r.name || ""}</td>
+      <td>${state}</td>
+      <td>${fmtTime(r.inspectedAt)}</td>
+      <td class="${(r.status || "").toUpperCase() === "OK" ? "status-good" : "status-bad"}">${r.status || ""}</td>
+      <td>${r.inspector || ""}</td>
+    `;
+
+    activeTagsBody.appendChild(tr);
+  }
+}
+
+// ===== RENDER: RFID LOG =====
+function renderLog() {
+  if (!logBody) return;
+
+  const q = getSearchText();
+  logBody.innerHTML = "";
+
+  const rows = [...eventsArr].sort((a, b) => (b.inspectedAt || 0) - (a.inspectedAt || 0));
+
+  for (const r of rows) {
+    const hay = `${r.uidKey || ""} ${r.name || ""} ${r.inspector || ""} ${r.status || ""}`.toLowerCase();
+    if (q && !hay.includes(q)) continue;
+
+    const tr = document.createElement("tr");
+
+    if ((r.status || "").toUpperCase() === "FAIL") tr.classList.add("row-fail");
+
+    tr.innerHTML = `
+      <td>${fmtTime(r.inspectedAt)}</td>
+      <td>${r.uidKey || ""}</td>
+      <td>${r.name || ""}</td>
+      <td class="${(r.status || "").toUpperCase() === "OK" ? "status-good" : "status-bad"}">${r.status || ""}</td>
+      <td>${r.inspector || ""}</td>
+    `;
+
+    logBody.appendChild(tr);
+  }
+}
+
+// ===== RENDER: WEIGHT CARD =====
+function renderWeightCard() {
+  if (!weightStatusText) return;
+
+  if (!latestWeight) {
+    weightStatusText.textContent = "—";
+    weightValueText.textContent = "Weight: -";
+    weightInspectorText.textContent = "Inspector: -";
+    weightModeText.textContent = "Mode: -";
+    weightCheckedAtText.textContent = "Checked at: -";
+    weightCountdownText.textContent = "Next periodic refresh window: -";
+
+    if (weightCard) {
+      weightCard.classList.remove("weight-good", "weight-replace");
     }
 
-    .weight-replace {
-      background: #fef2f2;
-      border-color: #fca5a5;
+    if (lastWeightTimeEl) {
+      lastWeightTimeEl.textContent = "-";
     }
 
-    .status-good {
-      color: #166534;
-      font-weight: bold;
+    return;
+  }
+
+  const checkedAt = latestWeight.checkedAt || 0;
+  const weightStatus = latestWeight.weightStatus || "-";
+
+  weightStatusText.textContent = weightStatus;
+  weightValueText.textContent = `Weight: ${latestWeight.weight_g ?? "-"} g`;
+  weightInspectorText.textContent = `Inspector: ${latestWeight.inspector || "-"}`;
+  weightModeText.textContent = `Mode: ${latestWeight.mode || "-"}`;
+  weightCheckedAtText.textContent = `Checked at: ${fmtTime(checkedAt)}`;
+
+  const remainingMs = getRemainingMs(checkedAt);
+  weightCountdownText.textContent = `Next periodic refresh window: ${formatCountdown(remainingMs)}`;
+
+  if (lastWeightTimeEl) {
+    lastWeightTimeEl.textContent = fmtTime(checkedAt);
+  }
+
+  if (weightCard) {
+    weightCard.classList.remove("weight-good", "weight-replace");
+
+    if (weightStatus === "GOOD") {
+      weightCard.classList.add("weight-good");
+    } else if (weightStatus === "REPLACE") {
+      weightCard.classList.add("weight-replace");
+    }
+  }
+}
+
+// ===== RENDER: WEIGHT LOG =====
+function renderWeightLog() {
+  if (!weightLogBody) return;
+
+  const q = getSearchText();
+  weightLogBody.innerHTML = "";
+
+  const rows = [...weightEventsArr].sort((a, b) => (b.checkedAt || 0) - (a.checkedAt || 0));
+
+  for (const r of rows) {
+    const hay = `${r.asset || ""} ${r.weightStatus || ""} ${r.inspector || ""} ${r.mode || ""}`.toLowerCase();
+    if (q && !hay.includes(q)) continue;
+
+    const tr = document.createElement("tr");
+
+    if ((r.weightStatus || "").toUpperCase() === "REPLACE") {
+      tr.classList.add("row-fail");
     }
 
-    .status-bad {
-      color: #b91c1c;
-      font-weight: bold;
-    }
+    tr.innerHTML = `
+      <td>${fmtTime(r.checkedAt)}</td>
+      <td>${r.asset || ""}</td>
+      <td>${r.weight_g ?? ""}</td>
+      <td class="${(r.weightStatus || "").toUpperCase() === "GOOD" ? "status-good" : "status-bad"}">${r.weightStatus || ""}</td>
+      <td>${r.inspector || ""}</td>
+      <td>${r.mode || ""}</td>
+    `;
 
-    .row-fail {
-      background: #fff1f2;
-    }
+    weightLogBody.appendChild(tr);
+  }
+}
 
-    .row-expired {
-      opacity: 0.7;
-    }
-  </style>
-</head>
-<body>
-  <h2>Inspection Dashboard</h2>
+// ===== EVENTS =====
+if (searchEl) {
+  searchEl.addEventListener("input", () => {
+    renderActiveTags();
+    renderLog();
+    renderWeightLog();
+  });
+}
 
-  <div class="row">
-    <div class="card">
-      <div><b>Status</b></div>
-      <div id="status" class="muted">Loading...</div>
-    </div>
+// ===== START =====
+async function start() {
+  try {
+    setStatusText("Signing in (anonymous)...");
+    await signInAnonymously(auth);
 
-    <div class="card">
-      <div><b>RFID active window</b></div>
-      <div class="big">1 minute per unique tag</div>
-      <div class="muted">Each UID resets independently when scanned</div>
-    </div>
+    setStatusText("Connected. Listening to Firebase...");
 
-    <div class="card">
-      <div><b>Last RFID event</b></div>
-      <div id="lastEventTime" class="muted">-</div>
-    </div>
+    // RFID inspection events
+    const evRef = query(ref(db, "inspectionEvents"), limitToLast(500));
+    onValue(evRef, (snap) => {
+      const obj = snap.val() || {};
 
-    <div class="card">
-      <div><b>Last weight check</b></div>
-      <div id="lastWeightTime" class="muted">-</div>
-    </div>
-  </div>
+      eventsArr = Object.entries(obj).map(([id, rec]) => ({
+        id,
+        uidKey: rec?.uidKey || "",
+        name: rec?.name || "",
+        status: rec?.status || "",
+        inspector: rec?.inspector || "",
+        inspectedAt: rec?.inspectedAt || 0
+      }));
 
-  <div class="grid-2">
-    <div class="card" id="weightCard">
-      <div><b>Weight Sensor Live Status</b></div>
-      <div id="weightStatusText" class="big">—</div>
-      <div id="weightValueText" class="muted">Weight: -</div>
-      <div id="weightInspectorText" class="muted">Inspector: -</div>
-      <div id="weightModeText" class="muted">Mode: -</div>
-      <div id="weightCheckedAtText" class="muted">Checked at: -</div>
-      <div id="weightCountdownText" class="muted">Next periodic refresh window: -</div>
-    </div>
+      const latestEventMs = eventsArr.reduce(
+        (mx, e) => Math.max(mx, e.inspectedAt || 0),
+        0
+      );
 
-    <div class="card">
-      <div><b>Weight Check Rule</b></div>
-      <div class="big">Every 60 seconds</div>
-      <div class="muted">Auto in MENU/ENROLL, inspector sign-off in INSPECTION mode</div>
-    </div>
-  </div>
+      if (lastEventTimeEl) {
+        lastEventTimeEl.textContent = fmtTime(latestEventMs);
+      }
 
-  <div class="row" style="margin-top:16px;">
-    <input id="search" placeholder="Search name / uidKey / inspector..." />
-  </div>
+      rebuildLatestByUid();
+      renderActiveTags();
+      renderLog();
+    });
 
-  <div class="section">
-    <h3>Live Active RFID Tags</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>UID Key</th>
-          <th>Name</th>
-          <th>Window Status</th>
-          <th>Last Scanned</th>
-          <th>Status</th>
-          <th>Inspector</th>
-        </tr>
-      </thead>
-      <tbody id="activeTagsBody"></tbody>
-    </table>
-  </div>
+    // Latest weight check
+    const latestWeightRef = ref(db, "latestWeightCheck/fireExtinguisher");
+    onValue(latestWeightRef, (snap) => {
+      latestWeight = snap.val() || null;
+      renderWeightCard();
+    });
 
-  <div class="section">
-    <h3>RFID Inspection Log</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>UID Key</th>
-          <th>Name</th>
-          <th>Status</th>
-          <th>Inspector</th>
-        </tr>
-      </thead>
-      <tbody id="logBody"></tbody>
-    </table>
-  </div>
+    // Weight event log
+    const weightEvRef = query(ref(db, "weightEvents"), limitToLast(500));
+    onValue(weightEvRef, (snap) => {
+      const obj = snap.val() || {};
 
-  <div class="section">
-    <h3>Weight Check Log</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Asset</th>
-          <th>Weight (g)</th>
-          <th>Weight Status</th>
-          <th>Inspector</th>
-          <th>Mode</th>
-        </tr>
-      </thead>
-      <tbody id="weightLogBody"></tbody>
-    </table>
-  </div>
+      weightEventsArr = Object.entries(obj).map(([id, rec]) => ({
+        id,
+        asset: rec?.asset || "",
+        weight_g: rec?.weight_g ?? "",
+        weightStatus: rec?.weightStatus || "",
+        inspector: rec?.inspector || "",
+        mode: rec?.mode || "",
+        checkedAt: rec?.checkedAt || 0
+      }));
 
-  <script type="module" src="./app.js"></script>
-</body>
-</html>
+      renderWeightLog();
+    });
+
+    // live refresh for countdown timers
+    setInterval(() => {
+      renderActiveTags();
+      renderWeightCard();
+    }, 250);
+
+  } catch (e) {
+    console.error(e);
+    setStatusText("Error: " + (e?.message || e));
+  }
+}
+
+start();
